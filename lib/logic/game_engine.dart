@@ -1,3 +1,4 @@
+import 'dart:math';
 import 'package:flutter/foundation.dart';
 import '../models/card.dart';
 import '../models/player.dart';
@@ -25,9 +26,7 @@ class GameEngine extends ChangeNotifier {
   final List<String> log = [];
   
   String? aiNotification;
-
-  // Tiene traccia della carta che l'AI ha appena giocato ma che non è ancora entrata in campo
-  Card? _pendingAiLand;
+  final Random _random = Random();
 
   GameEngine(this.p1, this.p2) {
     activePlayer = p1;
@@ -41,17 +40,18 @@ class GameEngine extends ChangeNotifier {
   void _startGame() {
     _fillDeck(p1);
     _fillDeck(p2);
-    p1.shuffleDeck();
-    p2.shuffleDeck();
+    p1.deck.shuffle(_random);
+    p2.deck.shuffle(_random);
     for (int i = 0; i < 3; i++) {
-      p1.drawCard();
-      p2.drawCard();
+      _drawCard(p1);
+      _drawCard(p2);
     }
     _log('Partita iniziata. Mano iniziale: 3 carte a testa.');
     notifyListeners();
   }
 
   void _fillDeck(Player p) {
+    p.deck.clear();
     for (final t in LandType.values) {
       for (int i = 0; i < 5; i++) {
         p.deck.add(Card(t));
@@ -62,20 +62,30 @@ class GameEngine extends ChangeNotifier {
   void _log(String s) => log.add(s);
   void clearAiNotification() { aiNotification = null; notifyListeners(); }
 
+  void _drawCard(Player p) {
+    if (p.deck.isEmpty) {
+      if (p.graveyard.isEmpty) return;
+      p.deck.addAll(p.graveyard);
+      p.graveyard.clear();
+      p.deck.shuffle(_random);
+      _log('${p.name} rimescola il cimitero nel grimorio.');
+    }
+    if (p.deck.isNotEmpty) {
+      p.hand.add(p.deck.removeAt(0));
+    }
+  }
+
+  // --- GESTIONE TURNO ---
   void startTurn() {
     if (phase == GamePhase.gameOver) return;
     activePlayer.hasPlayedLandThisTurn = false;
 
-    if (!firstTurnSkippedDraw && turnNumber == 1 && activePlayer == p1) {
+    if (turnNumber == 1 && activePlayer == p1 && !firstTurnSkippedDraw) {
       firstTurnSkippedDraw = true;
       _log('Turno 1: ${activePlayer.name} salta la pescata.');
     } else {
-      final c = activePlayer.drawCard();
-      if (c != null) {
-        _log('${activePlayer.name} pesca una carta.');
-      } else {
-        _log('${activePlayer.name} non ha carte da pescare.');
-      }
+      _drawCard(activePlayer);
+      _log('${activePlayer.name} pesca una carta.');
     }
     notifyListeners();
   }
@@ -110,79 +120,104 @@ class GameEngine extends ChangeNotifier {
   void triggerLandEffect(Card card) {
     if (phase != GamePhase.playing) return; 
 
+    final aiIslands = p2.hand.where((c) => c.type == LandType.island).toList();
+    if (aiIslands.isNotEmpty && p2.hand.length >= 2 && _shouldAiCounter(card)) {
+      Card islandToDiscard = aiIslands.first;
+      Card otherToDiscard = p2.hand.firstWhere((c) => c.id != islandToDiscard.id);
+      
+      p2.hand.remove(islandToDiscard);
+      p2.hand.remove(otherToDiscard);
+      p2.graveyard.add(islandToDiscard);
+      p2.graveyard.add(otherToDiscard);
+      
+      p1.battlefield.remove(card); 
+      p1.graveyard.add(card);
+      
+      aiNotification = "L'avversario ha usato un'Isola per neutralizzare la tua ${card.type.label}!";
+      _log('AI ha neutralizzato ${card.type.label}.');
+      _checkWinner();
+      notifyListeners();
+      return;
+    }
+
     _log('${card.type.label} attiva il suo effetto.');
     
     switch (card.type) {
       case LandType.plains:
-        activePlayer.drawCard();
+        _drawCard(activePlayer);
         _log('${activePlayer.name} pesca 1 carta.');
-        _checkWinner();
-        notifyListeners();
         break;
       case LandType.island:
         if (activePlayer.deck.isEmpty) {
-          _log('Grimorio vuoto: Profetizzare non ha effetto.');
-          _checkWinner();
-          notifyListeners();
+          _log('Grimorio vuoto.');
         } else {
           pending = PendingAction(PendingType.scryOne, activePlayer);
           phase = GamePhase.choosingScry;
           notifyListeners();
+          return;
         }
         break;
       case LandType.swamp:
         final opp = opponent;
         final count = opp.hand.length < 3 ? opp.hand.length : 3;
         if (count == 0) {
-          _log('Mano avversaria vuota: Ricatto senza effetto.');
-          _checkWinner();
-          notifyListeners();
+          _log('Mano avversaria vuota.');
         } else {
           final shown = opp.hand.take(count).toList();
           pending = PendingAction(PendingType.blackmail, shown);
           phase = GamePhase.choosingBlackmail;
           notifyListeners();
+          return;
         }
         break;
       case LandType.mountain:
         final targets = <Card>[...p1.battlefield, ...p2.battlefield];
         if (targets.isEmpty) {
-          _log('Nessuna terra bersaglio: Montagna senza effetto.');
-          _checkWinner();
-          notifyListeners();
+          _log('Nessuna terra bersaglio.');
         } else {
           pending = PendingAction(PendingType.mountainTarget, targets);
           phase = GamePhase.choosingMountainTarget;
           notifyListeners();
+          return;
         }
         break;
       case LandType.forest:
         final lands = activePlayer.graveyard.where((c) => c is Card).toList();
         if (lands.isEmpty) {
-          _log('Cimitero vuoto: Ricrescita senza effetto.');
-          _checkWinner();
-          notifyListeners();
+          _log('Cimitero vuoto.');
         } else {
           pending = PendingAction(PendingType.regrowth, activePlayer);
           phase = GamePhase.choosingRegrowth;
           notifyListeners();
+          return;
         }
         break;
     }
+    _checkWinner();
+    notifyListeners();
   }
 
-  // --- GESTIONE TURNO AI E ISOLA ---
-  
+  bool _shouldAiCounter(Card card) {
+    if (card.type == LandType.mountain) return true;
+    final types = p1.battlefield.map((c) => c.type).toSet();
+    if (types.length == 4 && !types.contains(card.type)) return true;
+    final counts = <LandType, int>{};
+    for (final c in p1.battlefield) {
+      counts[c.type] = (counts[c.type] ?? 0) + 1;
+    }
+    if ((counts[card.type] ?? 0) == 4) return true;
+    return false;
+  }
+
+  // --- ISOLA ISTANTANEA ---
   void declineIslandReaction() {
     if (phase != GamePhase.waitingIslandReaction || pending == null) return;
     final card = pending!.data as Card;
     pending = null;
     phase = GamePhase.playing;
     
-    // Se la carta era dell'AI, ora la facciamo entrare in campo ed eseguiamo l'effetto
     if (activePlayer == aiPlayer) {
-       _pendingAiLand = null;
-       aiPlayer.battlefield.add(card); // <-- Aggiunge la carta al campo SOLO ORA
+       aiPlayer.battlefield.add(card); 
        notifyListeners();
        _applyAiEffect(card, aiPlayer);
        _completeAiTurn();
@@ -198,27 +233,23 @@ class GameEngine extends ChangeNotifier {
     Player caster = activePlayer; 
     
     if (caster == aiPlayer) {
-      // L'umano neutralizza l'AI
       p1.hand.remove(island);
       p1.hand.remove(other);
       p1.graveyard.add(island);
       p1.graveyard.add(other);
       
-      // La carta neutralizzata va DIRETTAMENTE nel cimitero, non passa dal campo
+      aiPlayer.battlefield.remove(countered);
       aiPlayer.graveyard.add(countered);
-      _pendingAiLand = null;
       
       aiNotification = 'Hai neutralizzato ${countered.type.label} dell\'avversario!';
     } else {
-      // L'AI neutralizza l'umano
       p2.hand.remove(island);
       p2.hand.remove(other);
       p2.graveyard.add(island);
       p2.graveyard.add(other);
       
-      p1.graveyard.add(countered);
-      // Se la carta neutralizzata era sul campo dell'umano, la rimuoviamo
       p1.battlefield.remove(countered);
+      p1.graveyard.add(countered);
       
       aiNotification = 'L\'avversario ha neutralizzato la tua ${countered.type.label}!';
     }
@@ -235,35 +266,36 @@ class GameEngine extends ChangeNotifier {
     }
   }
 
+  // --- GESTIONE TURNO AI ---
   void playAiTurn() {
     if (winner != null) return;
     
     if (activePlayer != aiPlayer) {
-      startTurn();
+       startTurn();
     }
     
     if (aiPlayer.hand.isNotEmpty && canPlayLand(aiPlayer)) {
       Card? choice = _aiChooseBestCard();
       if (choice != null) {
+        
         _log('${aiPlayer.name} gioca ${choice.type.label}.');
         aiPlayer.hasPlayedLandThisTurn = true;
-        
-        // Rimuoviamo dalla mano ma NON mettiamo in campo (aspetta la reazione)
         aiPlayer.hand.remove(choice);
-        _pendingAiLand = choice;
         
-        // Controlla se l'UMANO può neutralizzare
+        // RIMOSSA LA RIGA CHE AGGIUNGEVA LA CARTA QUI
+        
+        notifyListeners(); 
+
         final humanIslands = p1.hand.where((c) => c.type == LandType.island).toList();
         if (humanIslands.isNotEmpty && p1.hand.length >= 2) {
           pending = PendingAction(PendingType.islandReaction, choice);
           phase = GamePhase.waitingIslandReaction;
           notifyListeners();
-          return;
+          return; 
         }
 
-        // Se l'umano non ha l'Isola, mettiamo subito in campo
+        // AGGIUNGIAMO LA CARTA SOLO QUI SE NON C'È NEUTRALIZZAZIONE
         aiPlayer.battlefield.add(choice);
-        _pendingAiLand = null;
         notifyListeners();
         _applyAiEffect(choice, aiPlayer);
       }
@@ -274,24 +306,30 @@ class GameEngine extends ChangeNotifier {
 
   void _completeAiTurn() {
     if (winner != null) return;
-    
-    _log('${aiPlayer.name} termina il suo turno.');
     endTurn(); 
-    
     if (winner == null) {
       startTurn(); 
     }
     notifyListeners();
   }
 
+  // --- EFFETTI DELL'AI ---
   void _applyAiEffect(Card card, Player caster) {
+    String effectMessage = '';
+    
     switch (card.type) {
       case LandType.plains:
-        caster.drawCard();
-        _log('${caster.name} pesca 1 carta.');
+        _drawCard(caster);
+        effectMessage = "L'avversario ha giocato una Pianura e ha pescato una carta.";
         break;
       case LandType.island:
-        if (caster.deck.isNotEmpty) _log('${caster.name} guarda la prima carta e la lascia in cima.');
+        if (caster.deck.isNotEmpty) {
+          final top = caster.deck.removeAt(0);
+          caster.deck.add(top);
+          effectMessage = "L'avversario ha giocato un'Isola e ha messo la prima carta del grimorio in fondo.";
+        } else {
+          effectMessage = "L'avversario ha giocato un'Isola, ma il grimorio era vuoto.";
+        }
         break;
       case LandType.swamp:
         final opp = opponent;
@@ -301,16 +339,20 @@ class GameEngine extends ChangeNotifier {
           final chosen = shown.first;
           opp.hand.remove(chosen);
           opp.graveyard.add(chosen);
-          _log('${caster.name} fa scartare una carta a caso.');
+          effectMessage = "L'avversario ha giocato una Palude e ti ha fatto scartare una ${chosen.type.label}.";
+        } else {
+          effectMessage = "L'avversario ha giocato una Palude, ma non avevi carte da scartare.";
         }
         break;
       case LandType.mountain:
-        final humanLands = opponent.battlefield.toList();
+        final humanLands = p1.battlefield.toList();
         if (humanLands.isNotEmpty) {
           final target = humanLands.first;
-          opponent.battlefield.remove(target);
-          opponent.graveyard.add(target);
-          _log('${caster.name} distrugge una ${target.type.label} avversaria.');
+          p1.battlefield.remove(target);
+          p1.graveyard.add(target);
+          effectMessage = "L'avversario ha giocato una Montagna e ha distrutto la tua ${target.type.label}.";
+        } else {
+          effectMessage = "L'avversario ha giocato una Montagna, ma non avevi terre da distruggere.";
         }
         break;
       case LandType.forest:
@@ -319,16 +361,21 @@ class GameEngine extends ChangeNotifier {
           final target = lands.first;
           caster.graveyard.remove(target);
           caster.hand.add(target);
-          _log('${caster.name} riprende una ${target.type.label} dal cimitero.');
+          effectMessage = "L'avversario ha giocato una Foresta e ha ripreso una ${target.type.label} dal cimitero.";
+        } else {
+          effectMessage = "L'avversario ha giocato una Foresta, ma non c'era nulla da recuperare nel cimitero.";
         }
         break;
     }
+    
     _checkWinner();
-    aiNotification = '${caster.name} ha giocato ${card.type.label} e ne ha attivato l\'effetto.';
+    if (effectMessage.isNotEmpty) {
+      aiNotification = effectMessage;
+    }
     notifyListeners();
   }
 
-  // --- RISOLUZIONE EFFETTI (UMANO) ---
+  // --- RISOLUZIONE EFFETTI ---
   void resolveScry({required bool keepOnTop}) {
     if (phase != GamePhase.choosingScry || pending == null) return;
     final caster = pending!.data as Player;
@@ -336,9 +383,6 @@ class GameEngine extends ChangeNotifier {
     if (!keepOnTop) {
       final top = caster.deck.removeAt(0);
       caster.deck.add(top);
-      _log('${caster.name} mette la carta in fondo.');
-    } else {
-      _log('${caster.name} lascia la carta in cima.');
     }
     _afterEffect();
   }
@@ -346,10 +390,7 @@ class GameEngine extends ChangeNotifier {
   void resolveBlackmail(Card chosen) {
     if (phase != GamePhase.choosingBlackmail || pending == null) return;
     final opp = opponent;
-    if (opp.hand.remove(chosen)) {
-      opp.graveyard.add(chosen);
-      _log('${opp.name} scarta ${chosen.type.label} per Ricatto.');
-    }
+    if (opp.hand.remove(chosen)) opp.graveyard.add(chosen);
     _afterEffect();
   }
 
@@ -367,18 +408,13 @@ class GameEngine extends ChangeNotifier {
   void resolveRegrowth(Card chosen) {
     if (phase != GamePhase.choosingRegrowth || pending == null) return;
     final caster = pending!.data as Player;
-    if (caster.graveyard.remove(chosen)) {
-      caster.hand.add(chosen);
-      _log('${caster.name} riprende ${chosen.type.label} dal cimitero.');
-    }
+    if (caster.graveyard.remove(chosen)) caster.hand.add(chosen);
     _afterEffect();
   }
 
   void _afterEffect() {
     pending = null;
-    if (phase != GamePhase.gameOver) {
-      phase = GamePhase.playing;
-    }
+    if (phase != GamePhase.gameOver) phase = GamePhase.playing;
     _checkWinner();
     notifyListeners();
   }

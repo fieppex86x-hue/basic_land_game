@@ -28,6 +28,18 @@ class _GameScreenState extends State<GameScreen> {
   Widget build(BuildContext context) {
     return Consumer<GameEngine>(
       builder: (context, engine, _) {
+        if (engine.winner != null) {
+          return FutureBuilder(
+            future: Future.delayed(const Duration(seconds: 2)),
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return _buildGameBody(context, engine); 
+              }
+              return _gameOverScreen(context, engine); 
+            },
+          );
+        }
+
         if (engine.aiNotification != null) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             _showAiNotification(context, engine, engine.aiNotification!);
@@ -35,82 +47,104 @@ class _GameScreenState extends State<GameScreen> {
           });
         }
 
-        if (engine.winner != null) {
-          return _gameOverScreen(context, engine);
-        }
-
-        return Scaffold(
-          appBar: AppBar(
-            title: Text('Turno ${engine.turnNumber} — ${engine.activePlayer.name}'),
-            actions: [
-              IconButton(
-                icon: const Icon(Icons.info_outline),
-                onPressed: () => _showLog(context, engine),
-              ),
-            ],
-          ),
-          body: SafeArea(
-            child: Column(
-              children: [
-                Expanded(
-                  flex: 4,
-                  child: _playerBoard(context, engine: engine, player: engine.p2, isOpponent: true, label: 'Avversario (AI)', color: Colors.red),
-                ),
-                Container(height: 1, color: Colors.black26),
-                Expanded(
-                  flex: 5,
-                  child: _playerBoard(context, engine: engine, player: engine.p1, isOpponent: false, label: 'Il Tuo Campo', color: Colors.blue),
-                ),
-                _actionBar(engine),
-              ],
-            ),
-          ),
-        );
+        return _buildGameBody(context, engine);
       },
+    );
+  }
+
+  Widget _buildGameBody(BuildContext context, GameEngine engine) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Turno ${engine.turnNumber} — ${engine.activePlayer.name}'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.info_outline),
+            onPressed: () => _showLog(context, engine),
+          ),
+        ],
+      ),
+      body: SafeArea(
+        child: Column(
+          children: [
+            Expanded(
+              flex: 4,
+              child: _playerBoard(context, engine: engine, player: engine.p2, isOpponent: true, label: 'Avversario (AI)', color: Colors.red),
+            ),
+            Container(height: 1, color: Colors.black26),
+            Expanded(
+              flex: 5,
+              child: _playerBoard(context, engine: engine, player: engine.p1, isOpponent: false, label: 'Il Tuo Campo', color: Colors.blue),
+            ),
+            _actionBar(engine),
+          ],
+        ),
+      ),
     );
   }
 
   Widget _gameOverScreen(BuildContext context, GameEngine engine) {
     bool isHumanWinner = engine.winner == engine.p1;
     
+    String reason = "";
+    final types = engine.winner!.battlefield.map((c) => c.type).toSet();
+    if (types.length == 5) {
+      reason = "Vittoria per DOMINIO COMPLETO (5 tipi diversi).";
+    } else {
+      final counts = <LandType, int>{};
+      for (final c in engine.winner!.battlefield) {
+        counts[c.type] = (counts[c.type] ?? 0) + 1;
+      }
+      final maxCount = counts.values.reduce((a, b) => a > b ? a : b);
+      if (maxCount >= 5) {
+        reason = "Vittoria per CINQUE DI UN TIPO.";
+      }
+    }
+
     return Scaffold(
       backgroundColor: isHumanWinner ? Colors.green.shade900 : Colors.red.shade900,
       body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              isHumanWinner ? Icons.emoji_events : Icons.sentiment_dissatisfied,
-              size: 100,
-              color: Colors.amber,
-            ),
-            const SizedBox(height: 24),
-            Text(
-              isHumanWinner ? 'HAI VINTO!' : 'HAI PERSO!',
-              style: const TextStyle(fontSize: 48, fontWeight: FontWeight.bold, color: Colors.white),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              isHumanWinner 
-                ? 'Hai dominato il campo di battaglia.' 
-                : 'L\'avversario ha avuto la meglio.',
-              style: const TextStyle(fontSize: 20, color: Colors.white70),
-            ),
-            const SizedBox(height: 48),
-            ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
-                backgroundColor: Colors.white,
-                foregroundColor: Colors.black,
-                textStyle: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                isHumanWinner ? Icons.emoji_events : Icons.sentiment_dissatisfied,
+                size: 100,
+                color: Colors.amber,
               ),
-              icon: const Icon(Icons.refresh),
-              label: const Text('Gioca Ancora'),
-              onPressed: () {
-                Navigator.pop(context); 
-              },
-            ),
-          ],
+              const SizedBox(height: 24),
+              Text(
+                isHumanWinner ? 'HAI VINTO!' : 'HAI PERSO!',
+                style: const TextStyle(fontSize: 48, fontWeight: FontWeight.bold, color: Colors.white),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                isHumanWinner ? 'Hai dominato il campo di battaglia.' : 'L\'avversario ha avuto la meglio.',
+                style: const TextStyle(fontSize: 20, color: Colors.white70),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                reason,
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 16, color: Colors.white, fontWeight: FontWeight.w500),
+              ),
+              const SizedBox(height: 48),
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+                  backgroundColor: Colors.white,
+                  foregroundColor: Colors.black,
+                  textStyle: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                icon: const Icon(Icons.refresh),
+                label: const Text('Gioca Ancora'),
+                onPressed: () {
+                  Navigator.pop(context); 
+                },
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -144,7 +178,6 @@ class _GameScreenState extends State<GameScreen> {
               ],
             ),
           ),
-          
           Expanded(
             child: Row(
               children: [
@@ -166,17 +199,15 @@ class _GameScreenState extends State<GameScreen> {
               ],
             ),
           ),
-
           if (!isOpponent)
             Container(
               height: 110, 
               padding: const EdgeInsets.symmetric(horizontal: 8),
               child: LayoutBuilder(
                 builder: (context, constraints) {
-                  // Calcola la larghezza massima per ogni carta in base allo spazio
                   double cardWidth = player.hand.isEmpty ? 60 : (constraints.maxWidth / player.hand.length) - 4;
-                  if (cardWidth > 70) cardWidth = 70; // Limite massimo
-                  if (cardWidth < 30) cardWidth = 30;  // Limite minimo
+                  if (cardWidth > 70) cardWidth = 70; 
+                  if (cardWidth < 30) cardWidth = 30;  
 
                   return Row(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -186,7 +217,7 @@ class _GameScreenState extends State<GameScreen> {
                           padding: const EdgeInsets.symmetric(horizontal: 2),
                           child: CardWidget(
                             card: c,
-                            width: cardWidth, // Passiamo un valore numerico calcolato
+                            width: cardWidth,
                             onTap: engine.canPlayLand(player) ? () {
                               engine.playLand(c);
                               setState(() {});
@@ -204,7 +235,6 @@ class _GameScreenState extends State<GameScreen> {
                 },
               ),
             ),
-            
           if (isOpponent)
             SizedBox(
               height: 60,
