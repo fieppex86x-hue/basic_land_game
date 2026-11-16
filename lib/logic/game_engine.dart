@@ -75,7 +75,6 @@ class GameEngine extends ChangeNotifier {
     }
   }
 
-  // --- GESTIONE TURNO ---
   void startTurn() {
     if (phase == GamePhase.gameOver) return;
     activePlayer.hasPlayedLandThisTurn = false;
@@ -217,6 +216,7 @@ class GameEngine extends ChangeNotifier {
     phase = GamePhase.playing;
     
     if (activePlayer == aiPlayer) {
+       // Se la carta dell'AI non è stata neutralizzata, la facciamo entrare in campo e attiviamo l'effetto
        aiPlayer.battlefield.add(card); 
        notifyListeners();
        _applyAiEffect(card, aiPlayer);
@@ -277,15 +277,11 @@ class GameEngine extends ChangeNotifier {
     if (aiPlayer.hand.isNotEmpty && canPlayLand(aiPlayer)) {
       Card? choice = _aiChooseBestCard();
       if (choice != null) {
-        
         _log('${aiPlayer.name} gioca ${choice.type.label}.');
         aiPlayer.hasPlayedLandThisTurn = true;
         aiPlayer.hand.remove(choice);
         
-        // RIMOSSA LA RIGA CHE AGGIUNGEVA LA CARTA QUI
-        
-        notifyListeners(); 
-
+        // CONTROLLO ISOLA: prima di aggiungere al campo, chiediamo se l'umano vuole neutralizzare
         final humanIslands = p1.hand.where((c) => c.type == LandType.island).toList();
         if (humanIslands.isNotEmpty && p1.hand.length >= 2) {
           pending = PendingAction(PendingType.islandReaction, choice);
@@ -294,14 +290,57 @@ class GameEngine extends ChangeNotifier {
           return; 
         }
 
-        // AGGIUNGIAMO LA CARTA SOLO QUI SE NON C'È NEUTRALIZZAZIONE
+        // Se l'umano non può neutralizzare, aggiungiamo la carta al campo SOLO ORA
         aiPlayer.battlefield.add(choice);
         notifyListeners();
-        _applyAiEffect(choice, aiPlayer);
+
+        // Se è una Montagna, l'AI sceglie il bersaglio
+        if (choice.type == LandType.mountain) {
+          _aiChooseBestMountainTarget();
+        } else {
+          _applyAiEffect(choice, aiPlayer);
+        }
       }
     }
     
     _completeAiTurn();
+  }
+
+  void _aiChooseBestMountainTarget() {
+    final humanLands = p1.battlefield;
+    if (humanLands.isEmpty) {
+      aiNotification = "L'avversario ha giocato una Montagna, ma non avevi terre da distruggere.";
+      notifyListeners();
+      _checkWinner();
+      return;
+    }
+
+    final types = humanLands.map((c) => c.type).toSet();
+    Card? target;
+    
+    if (types.length == 4) {
+      target = humanLands.first;
+    } else {
+      final counts = <LandType, int>{};
+      for (final c in humanLands) {
+        counts[c.type] = (counts[c.type] ?? 0) + 1;
+      }
+      final maxType = counts.entries.reduce((a, b) => a.value > b.value ? a : b).key;
+      if ((counts[maxType] ?? 0) >= 4) {
+        target = humanLands.firstWhere((c) => c.type == maxType);
+      } else {
+        target = humanLands.first;
+      }
+    }
+
+    if (target != null) {
+      p1.battlefield.remove(target);
+      p1.graveyard.add(target);
+      aiNotification = "L'avversario ha giocato una Montagna e ha distrutto la tua ${target.type.label}.";
+      _log('${aiPlayer.name} distrugge una ${target.type.label} avversaria.');
+    }
+    _checkWinner();
+    notifyListeners();
   }
 
   void _completeAiTurn() {
@@ -313,7 +352,6 @@ class GameEngine extends ChangeNotifier {
     notifyListeners();
   }
 
-  // --- EFFETTI DELL'AI ---
   void _applyAiEffect(Card card, Player caster) {
     String effectMessage = '';
     
@@ -345,15 +383,8 @@ class GameEngine extends ChangeNotifier {
         }
         break;
       case LandType.mountain:
-        final humanLands = p1.battlefield.toList();
-        if (humanLands.isNotEmpty) {
-          final target = humanLands.first;
-          p1.battlefield.remove(target);
-          p1.graveyard.add(target);
-          effectMessage = "L'avversario ha giocato una Montagna e ha distrutto la tua ${target.type.label}.";
-        } else {
-          effectMessage = "L'avversario ha giocato una Montagna, ma non avevi terre da distruggere.";
-        }
+        // Già gestito in _aiChooseBestMountainTarget
+        effectMessage = "L'avversario ha giocato una Montagna.";
         break;
       case LandType.forest:
         final lands = caster.graveyard.where((c) => c is Card).toList();
@@ -443,19 +474,55 @@ class GameEngine extends ChangeNotifier {
 
   Card? _aiChooseBestCard() {
     if (aiPlayer.hand.isEmpty) return null;
-    final counts = <LandType, int>{};
-    for (final c in aiPlayer.battlefield) {
-      counts[c.type] = (counts[c.type] ?? 0) + 1;
+    
+    // Valuta il pericolo: se l'umano è vicino alla vittoria, usa una Montagna o un'Isola per fermarlo
+    final humanTypes = p1.battlefield.map((c) => c.type).toSet();
+    final humanCounts = <LandType, int>{};
+    for (final c in p1.battlefield) {
+      humanCounts[c.type] = (humanCounts[c.type] ?? 0) + 1;
     }
-    final types = counts.keys.toSet();
-    if (types.length == 4) {
+    
+    if (humanTypes.length == 4 || humanCounts.values.any((v) => v >= 4)) {
       for (final c in aiPlayer.hand) {
-        if (!types.contains(c.type)) return c;
+        if (c.type == LandType.mountain) {
+          return c;
+        }
+      }
+      for (final c in aiPlayer.hand) {
+        if (c.type == LandType.island) return c;
       }
     }
-    for (final c in aiPlayer.hand) {
-      if ((counts[c.type] ?? 0) == 4) return c;
+    
+    // Priorità per completare la vittoria
+    final aiTypes = aiPlayer.battlefield.map((c) => c.type).toSet();
+    final aiCounts = <LandType, int>{};
+    for (final c in aiPlayer.battlefield) {
+      aiCounts[c.type] = (aiCounts[c.type] ?? 0) + 1;
     }
+    
+    if (aiTypes.length == 4) {
+      for (final c in aiPlayer.hand) {
+        if (!aiTypes.contains(c.type)) return c;
+      }
+    }
+    
+    for (final c in aiPlayer.hand) {
+      if ((aiCounts[c.type] ?? 0) == 4) return c;
+    }
+    
+    // Altrimenti gioca una carta che non sprechi risorse
+    if (p1.battlefield.isEmpty) {
+      for (final c in aiPlayer.hand) {
+        if (c.type != LandType.mountain) return c;
+      }
+    }
+    
+    if (aiPlayer.graveyard.isEmpty) {
+      for (final c in aiPlayer.hand) {
+        if (c.type != LandType.forest) return c;
+      }
+    }
+    
     final handCounts = <LandType, int>{};
     for (final c in aiPlayer.hand) {
       handCounts[c.type] = (handCounts[c.type] ?? 0) + 1;

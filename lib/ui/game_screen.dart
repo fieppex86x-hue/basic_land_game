@@ -29,7 +29,7 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
   late Animation<double> _blinkAnimation;
 
   AudioSource? _sparkleSource;
-  SoundHandle? _currentSoundHandle;
+  final List<SoundHandle> _activeHandles = []; // Lista di tutti i suoni attivi
   bool _audioInitialized = false;
 
   @override
@@ -72,27 +72,29 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
     if (!_audioInitialized || _sparkleSource == null) return;
     try {
       SoLoud.instance.setWaveformFreq(_sparkleSource!, 600);
-      _currentSoundHandle = SoLoud.instance.play(_sparkleSource!);
-      SoLoud.instance.setVolume(_currentSoundHandle!, 0.2);
+      final handle = SoLoud.instance.play(_sparkleSource!);
+      SoLoud.instance.setVolume(handle, 0.2);
+      _activeHandles.add(handle); // Salva l'handle per fermarlo dopo
     } catch (e) {
       debugPrint('Audio play error: $e');
     }
   }
 
-  void _stopSparkleSound() {
-    if (_currentSoundHandle != null) {
+  // Ferma TUTTI i suoni attivi
+  void _stopAllSparkleSounds() {
+    for (final handle in _activeHandles) {
       try {
-        SoLoud.instance.stop(_currentSoundHandle!);
-        _currentSoundHandle = null;
+        SoLoud.instance.stop(handle);
       } catch (e) {
         debugPrint('Audio stop error: $e');
       }
     }
+    _activeHandles.clear();
   }
 
   @override
   void dispose() {
-    _stopSparkleSound();
+    _stopAllSparkleSounds();
     _blinkController.dispose();
     if (_sparkleSource != null) {
       SoLoud.instance.disposeSource(_sparkleSource!);
@@ -165,8 +167,8 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
       await Future.delayed(const Duration(milliseconds: 300));
     }
 
-    // FERMA IL SUONO PRIMA DI MOSTRARE LA SCHERMATA FINALE
-    _stopSparkleSound();
+    // FERMA TUTTI I SUONI PRIMA DI MOSTRARE LA SCHERMATA FINALE
+    _stopAllSparkleSounds();
 
     await Future.delayed(const Duration(milliseconds: 500));
     
@@ -190,6 +192,8 @@ class _GameScreenState extends State<GameScreen> with SingleTickerProviderStateM
         }
 
         if (engine.winner != null && _showFinalScreen) {
+          // Ferma i suoni anche qui, per sicurezza
+          _stopAllSparkleSounds();
           return _gameOverScreen(context, engine);
         }
 
